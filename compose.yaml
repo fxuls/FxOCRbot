@@ -34,3 +34,9 @@ services:
 
 volumes:
   fxocr-data:
+
+networks:
+  default:
+    driver_opts:
+      # Fixed bridge name so host firewall rules can target this container (deploy/lan-block.sh).
+      com.docker.network.bridge.name: br-fxocr

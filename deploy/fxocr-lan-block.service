@@ -1,0 +1,16 @@
+[Unit]
+Description=FxOCRbot: block the bot container from LAN and host addresses
+Documentation=https://github.com/fxuls/FxOCRbot/blob/main/SECURITY.md
+After=docker.service network-online.target
+Wants=docker.service
+# Re-apply if Docker restarts (Docker rebuilds its own chains on start).
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/fxocr-lan-block apply
+ExecStop=/usr/local/sbin/fxocr-lan-block remove
+
+[Install]
+WantedBy=multi-user.target docker.service

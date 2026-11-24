@@ -27,6 +27,7 @@ src/fxocr/
   (web/, api/  planned: see docs/architecture.md)
 tests/         pytest, including hostile-input tests
 compose.yaml   hardened container for the bot
+deploy/        host firewall (LAN block) script + systemd unit
 ```
 
 ## Run it
@@ -35,6 +36,7 @@ compose.yaml   hardened container for the bot
 cp .env.example .env            # put your @BotFather token in TELEGRAM_BOT_TOKEN
 docker compose up -d --build
 docker compose logs -f
+sudo bash deploy/install-lan-block.sh   # recommended: block the container from your LAN (see SECURITY.md)
 ```
 
 Engines: see [docs/engines.md](docs/engines.md). `FXOCR_ENGINE` sets the default
