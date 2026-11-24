@@ -12,6 +12,8 @@ requires-python = ">=3.12"
 dependencies = [
     "liteparse==2.21.2",
     "pillow==13.0.0",
+    "rapidocr==3.10.0",
+    "onnxruntime==1.32.0",
 ]
 
 [project.optional-dependencies]

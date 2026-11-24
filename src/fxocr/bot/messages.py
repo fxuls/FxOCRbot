@@ -9,15 +9,12 @@ from __future__ import annotations
 import html
 
 from fxocr import APP_NAME
+from fxocr.core.engines import EngineInfo
 
 SUPPORTED = "JPEG, PNG and WEBP"
 
 
-def info(engine: str, max_mb: int, rate: int, window_s: int) -> str:
-    engine_line = {
-        "tesseract": 'Tesseract (via <a href="https://github.com/run-llama/liteparse">LiteParse</a>)',
-        "ocria-nano": 'OCRia-nano-1 by LlamaIndex (via <a href="https://github.com/run-llama/liteparse">LiteParse</a>)',
-    }.get(engine, html.escape(engine))
+def info(engine: EngineInfo, max_mb: int, rate: int, window_s: int) -> str:
     return (
         f"<b>{html.escape(APP_NAME)}</b>: send me an image and I'll reply with the text in it.\n\n"
         "<b>How to use</b>\n"
@@ -25,13 +22,37 @@ def info(engine: str, max_mb: int, rate: int, window_s: int) -> str:
         "Telegram compresses normal photos.\n"
         f"• Supported: {SUPPORTED}, up to {max_mb} MB. Other file types are refused.\n"
         f"• Limit: {rate} images per {window_s} s.\n\n"
+        f"<b>OCR engine</b>: {html.escape(engine.name)} ({html.escape(engine.tagline.lower())}).\n"
+        "Use /engine to compare the engines and switch.\n\n"
         "<b>Privacy</b>\n"
         "Images are processed on the fly and deleted right after. I don't store your images or the "
         "extracted text. Basic usage logs (Telegram user ID, file size, timing) are kept to prevent "
-        "abuse.\n\n"
-        f"<b>Engine</b>: {engine_line}\n"
-        "Commands: /info"
+        "abuse; your engine choice is remembered.\n\n"
+        "Commands: /info, /engine"
     )
+
+
+def engines(current: str, options: list[EngineInfo]) -> str:
+    parts = ["<b>OCR engines</b>: tap a button to switch. Your choice is remembered.\n"]
+    for e in options:
+        mark = "✅ " if e.id == current else ""
+        parts.append(
+            f"{mark}<b>{html.escape(e.name)}</b>: {html.escape(e.tagline)}\n"
+            f"  👍 {html.escape(e.good)}\n"
+            f"  👎 {html.escape(e.weak)}\n"
+            f"  ⏱ {html.escape(e.speed)} per image · licence: {html.escape(e.licence)}\n"
+        )
+    parts.append("Tip: if one engine misreads an image, switch and send it again.")
+    return "\n".join(parts)
+
+
+def switched(e: EngineInfo) -> str:
+    return f"Switched to {e.name}"
+
+
+def footer(e: EngineInfo | None, ms: int) -> str:
+    name = e.name if e else "?"
+    return f"<i>{html.escape(name)} · {ms / 1000:.1f} s · /engine to switch</i>"
 
 
 UNSUPPORTED = (
@@ -65,8 +86,11 @@ ERRORS = {
     "corrupt": "⚠️ I couldn't open that image. It may be damaged or not a real image.",
     "too_many_pixels": "⚠️ That image's dimensions are too large. Please send a smaller image.",
     "timeout": "⌛ That image took too long to read. Try a smaller or simpler image.",
+    "too_complex": "⚠️ That image needed too much memory to read. Try a smaller image or another /engine.",
 }
+ENGINE_GONE = "That engine isn't available right now."
 
 
-def result_html(text: str) -> str:
-    return f"<pre>{html.escape(text)}</pre>"
+def result_html(text: str, foot: str = "") -> str:
+    body = f"<pre>{html.escape(text)}</pre>"
+    return f"{body}\n{foot}" if foot else body

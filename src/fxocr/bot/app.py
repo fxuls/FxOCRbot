@@ -1,4 +1,4 @@
-"""FxOCRbot Telegram bot: /info, and OCR of images sent in private chats.
+"""FxOCRbot Telegram bot: /info, /engine (per-user engine picker), and OCR of images sent in private chats.
 
 Security model (see SECURITY.md):
 - Only images (JPEG/PNG/WEBP, identified by magic bytes, never by name/MIME) are processed.
@@ -6,6 +6,7 @@ Security model (see SECURITY.md):
 - Decoding and OCR happen in a separate, resource-limited worker process (fxocr.core.runner);
   the bot process never parses user files.
 - All output is HTML-escaped; per-user rate limits and a bounded global queue cap abuse.
+- Engine-switch buttons: callback data is validated against the engine registry.
 """
 
 from __future__ import annotations
@@ -15,14 +16,25 @@ import logging
 import os
 import sys
 
-from telegram import BotCommand, Message, Update
+from pathlib import Path
+
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from fxocr import APP_NAME, __version__
 from fxocr.bot import messages as M
 from fxocr.bot.limits import Busy, JobGate, RateLimiter
+from fxocr.bot.prefs import Prefs
 from fxocr.core.config import CoreConfig, _int
+from fxocr.core.engines import ENGINES, available, is_available
 from fxocr.core.imaging import sniff
 from fxocr.core.runner import ocr_image_bytes
 
@@ -39,17 +51,73 @@ class Bot:
         self.limiter = RateLimiter(self.rate, self.window)
         self.gate = JobGate(_int("FXOCR_CONCURRENCY", 2, 1, 32), _int("FXOCR_QUEUE_MAX", 20, 0, 1000))
         self.max_mb = core.max_file_bytes // (1024 * 1024)
+        self.default_engine = core.engine if is_available(core.engine) else "tesseract"
+        if self.default_engine != core.engine:
+            log.warning("default engine %s unavailable, using tesseract", core.engine)
+        data_dir = os.environ.get("FXOCR_DATA_DIR", "").strip()
+        self.prefs = Prefs(Path(data_dir) / "prefs.json" if data_dir else None)
+        self.switch_limiter = RateLimiter(20, 60)
+
+    def engine_for(self, uid: int) -> str:
+        eid = self.prefs.engine_for(uid, self.default_engine)
+        return eid if is_available(eid) else self.default_engine
+
+    @staticmethod
+    def _uid(update: Update) -> int:
+        return update.effective_user.id if update.effective_user else update.effective_chat.id
 
     # ---- commands -------------------------------------------------------------------------
     async def cmd_info(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         msg = update.effective_message
         if msg is None:
             return
+        eng = ENGINES[self.engine_for(self._uid(update))]
         await msg.reply_text(
-            M.info(self.core.engine, self.max_mb, self.rate, self.window),
+            M.info(eng, self.max_mb, self.rate, self.window),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
+
+    def _engine_view(self, uid: int) -> tuple[str, InlineKeyboardMarkup]:
+        current = self.engine_for(uid)
+        opts = available()
+        buttons = [
+            [InlineKeyboardButton(("✅ " if e.id == current else "") + e.name, callback_data=f"eng:{e.id}")]
+            for e in opts
+        ]
+        return M.engines(current, opts), InlineKeyboardMarkup(buttons)
+
+    async def cmd_engine(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        msg = update.effective_message
+        if msg is None:
+            return
+        if update.effective_chat and update.effective_chat.type != "private":
+            await msg.reply_text(M.GROUP_HINT)
+            return
+        text, kb = self._engine_view(self._uid(update))
+        await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+    async def on_engine_button(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        q = update.callback_query
+        uid = self._uid(update)
+        data = q.data or ""
+        eid = data.removeprefix("eng:")
+        # callback_data comes from the client: validate against the registry, never trust it.
+        if not data.startswith("eng:") or eid not in ENGINES or not is_available(eid):
+            await q.answer(M.ENGINE_GONE, show_alert=False)
+            return
+        if not self.switch_limiter.allow(uid):
+            await q.answer("Too many switches, wait a moment.")
+            return
+        if self.engine_for(uid) != eid:
+            self.prefs.set_engine(uid, eid)
+            log.info("engine switch user=%s engine=%s", uid, eid)
+        await q.answer(M.switched(ENGINES[eid]))
+        text, kb = self._engine_view(uid)
+        try:
+            await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except Exception as exc:  # "message is not modified" when tapping the current engine
+            log.debug("edit skipped: %s", type(exc).__name__)
 
     # ---- inputs ---------------------------------------------------------------------------
     async def on_photo(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -114,28 +182,30 @@ class Bot:
             await status.edit_text(M.UNSUPPORTED)
             return
 
+        engine = self.engine_for(uid)
         try:
             async with self.gate.slot():
                 await ctx.bot.send_chat_action(msg.chat_id, ChatAction.TYPING)
-                result = await ocr_image_bytes(data, self.core)
+                result = await ocr_image_bytes(data, self.core, engine=engine)
         except Busy:
             await status.edit_text(M.BUSY)
             return
         finally:
             del data
 
-        log.info("ocr user=%s kind=%s ok=%s err=%s ms=%d chars=%d",
-                 uid, kind, result.ok, result.error, result.ms, len(result.text))
+        log.info("ocr user=%s kind=%s engine=%s ok=%s err=%s ms=%d chars=%d",
+                 uid, kind, engine, result.ok, result.error, result.ms, len(result.text))
+        foot = M.footer(ENGINES.get(engine), result.ms)
         if not result.ok:
             await status.edit_text(M.ERRORS.get(result.error, M.FAILED))
             return
         if not result.text.strip():
-            await status.edit_text(M.NO_TEXT)
+            await status.edit_text(f"{M.NO_TEXT}\n{foot}", parse_mode=ParseMode.HTML)
             return
         if len(result.text) <= INLINE_MAX:
-            await status.edit_text(M.result_html(result.text), parse_mode=ParseMode.HTML)
+            await status.edit_text(M.result_html(result.text, foot), parse_mode=ParseMode.HTML)
             return
-        await status.edit_text("📄 Lots of text: sent as a file.")
+        await status.edit_text(f"📄 Lots of text: sent as a file.\n{foot}", parse_mode=ParseMode.HTML)
         await msg.reply_document(
             document=io.BytesIO(result.text.encode("utf-8")),
             filename="ocr.txt",
@@ -150,7 +220,10 @@ class Bot:
 
 
 async def _post_init(app: Application) -> None:
-    await app.bot.set_my_commands([BotCommand("info", "What this bot does and how to use it")])
+    await app.bot.set_my_commands([
+        BotCommand("info", "What this bot does and how to use it"),
+        BotCommand("engine", "Compare OCR engines and switch"),
+    ])
     me = await app.bot.get_me()
     log.info("%s %s running as @%s", APP_NAME, __version__, me.username)
 
@@ -166,6 +239,8 @@ def build_app(token: str, core: CoreConfig) -> Application:
     )
     private = filters.ChatType.PRIVATE
     app.add_handler(CommandHandler(["info", "start", "help"], bot.cmd_info))
+    app.add_handler(CommandHandler(["engine", "engines"], bot.cmd_engine))
+    app.add_handler(CallbackQueryHandler(bot.on_engine_button, pattern=r"^eng:"))
     app.add_handler(MessageHandler(private & filters.PHOTO, bot.on_photo))
     app.add_handler(MessageHandler(private & filters.Document.ALL, bot.on_document))
     app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, bot.on_text))
@@ -190,9 +265,10 @@ def main() -> None:
         print("TELEGRAM_BOT_TOKEN is not set (see .env.example)", file=sys.stderr)
         sys.exit(2)
     core = CoreConfig.from_env()
-    log.info("engine=%s max_file=%dMB", core.engine, core.max_file_bytes // (1024 * 1024))
+    log.info("default engine=%s available=%s max_file=%dMB", core.engine,
+             ",".join(e.id for e in available()), core.max_file_bytes // (1024 * 1024))
     app = build_app(token, core)
-    app.run_polling(allowed_updates=[Update.MESSAGE], drop_pending_updates=True)
+    app.run_polling(allowed_updates=[Update.MESSAGE, Update.CALLBACK_QUERY], drop_pending_updates=True)
 
 
 if __name__ == "__main__":

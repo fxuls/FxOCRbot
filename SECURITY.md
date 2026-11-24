@@ -17,6 +17,8 @@ Please don't open public issues for security problems.
 | Parser exploits in Pillow / OCR engine | Decoding and OCR run in a **separate short-lived worker process** (`python -I`) with rlimits (address space, CPU time, file size, open files, no core dumps), its own session (killed as a group on timeout), a minimal environment **without the bot token**, and a private temp dir. |
 | Resource exhaustion / floods | Size checked from Telegram metadata before download and again after (default 10 MB). Per-user rate limit (default 6 images / 60 s, one warning per window). Global concurrency cap (2) and bounded queue (20 → "busy"). Per-job wall-clock timeout. |
 | Container escape / lateral movement | Non-root UID, read-only root filesystem, `/tmp` tmpfs with `noexec`, all capabilities dropped, `no-new-privileges`, memory/CPU/PID limits, no host volumes. |
+| Forged button presses (callback data comes from the client) | Engine-switch callbacks are matched against the engine registry and availability; anything else is ignored. Switches are rate-limited (20/min/user). |
+| Preference store tampering / growth | `prefs.json` on a dedicated volume holds only `user id → engine id`; unknown values are dropped on load, writes are atomic, entries capped at 100k. Nothing else is writable in the container. |
 | Output injection (Telegram HTML) | All OCR text is HTML-escaped and sent inside `<pre>`; error messages are fixed strings. |
 | Token leakage | Token only in `.env` (gitignored). `httpx` request logging (which includes the token in the URL) is silenced. Error logs record exception type/message only, never update contents. |
 | Privacy | Images and text are kept in memory / a temp dir for the duration of one job and deleted. Logs hold user ID, file kind, size, timing and character count, never content. |
@@ -26,5 +28,5 @@ Please don't open public issues for security problems.
 - The container uses Docker's default bridge network and can reach the host's LAN. Operators
   should block private address ranges for this container (e.g. a `DOCKER-USER` iptables rule) so a
   hypothetical worker compromise can't reach other services.
-- Rate limits are in-memory and reset on restart.
+- Rate limits are in-memory and reset on restart. Engine choices persist (volume `fxocr-data`).
 - Dependencies are pinned at the top level (`pyproject.toml`); rebuild regularly for security fixes.

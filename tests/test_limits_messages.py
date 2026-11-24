@@ -60,6 +60,13 @@ def test_ocr_output_is_html_escaped():
     assert out.startswith("<pre>") and out.endswith("</pre>") and out.count("</pre>") == 1
 
 
-def test_info_mentions_limits():
-    s = M.info("tesseract", 10, 6, 60)
-    assert "10 MB" in s and "6 images per 60 s" in s
+def test_info_mentions_limits_and_engine():
+    from fxocr.core.engines import ENGINES
+    s = M.info(ENGINES["ppocr"], 10, 6, 60)
+    assert "10 MB" in s and "6 images per 60 s" in s and "PP-OCRv6" in s and "/engine" in s
+
+
+def test_engine_list_marks_current_and_escapes():
+    from fxocr.core.engines import ENGINES
+    s = M.engines("tesseract", list(ENGINES.values()))
+    assert "✅ <b>Tesseract</b>" in s and s.count("✅") == 1

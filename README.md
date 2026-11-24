@@ -9,6 +9,8 @@ Planned: a **website** and an **HTTP API** on the same core.
 ## Telegram bot
 
 - `/info`: what the bot does, limits, privacy.
+- `/engine`: compares the OCR engines (OCRia-nano-1, PP-OCRv6, Tesseract) and switches yours with
+  a tap. Each result shows which engine read it.
 - Send a **photo** or an **image file** (JPEG, PNG, WEBP; up to 10 MB) in a private chat. The bot
   replies with the text it found. Long results come back as a `.txt` file.
 - Anything else (videos, PDFs, documents, stickers, voice…) gets "unsupported file type, images
@@ -20,7 +22,8 @@ Planned: a **website** and an **HTTP API** on the same core.
 ```
 src/fxocr/
   core/        front-end-agnostic OCR: config, untrusted-image sanitising, sandboxed worker, engine
-  bot/         Telegram front-end (python-telegram-bot)
+  core/engines.py  engine registry (ids, user-facing descriptions)
+  bot/         Telegram front-end (python-telegram-bot), per-user engine prefs
   (web/, api/  planned: see docs/architecture.md)
 tests/         pytest, including hostile-input tests
 compose.yaml   hardened container for the bot
@@ -34,8 +37,9 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-Engine: `FXOCR_ENGINE=tesseract` (default) or `ocria-nano`. **Read [docs/engines.md](docs/engines.md)
-before enabling OCRia-nano-1**: its weights have their own licence, which restricts public OCR services.
+Engines: see [docs/engines.md](docs/engines.md). `FXOCR_ENGINE` sets the default
+(`tesseract`, `ppocr` or `ocria-nano`); OCRia-nano-1 also needs `WITH_OCRIA_NANO=1` at build time,
+and its weights have their own licence, so read that doc first.
 
 ## Develop
 
